@@ -1,0 +1,5 @@
+--- 
+Scorekeeper: 
+  adapter: sqlite3
+  database: data/data.sqlite
+  

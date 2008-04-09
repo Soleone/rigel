@@ -1,0 +1,9 @@
+--- 
+Example: 
+  nick: Rigel
+  leaves: 
+  - Rigel
+  - Scorekeeper
+  rejoin: true
+  channel: "#rigels-home"
+  server: irc.freenode.com
