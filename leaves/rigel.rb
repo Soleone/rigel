@@ -23,10 +23,13 @@ class Rigel < Autumn::Leaf
 		when /penis|cock|dick/i
 			"No way, dude!"
 		when /lolipop/i
-			"Yea, i like sweets!"
+			"Yea, i like that!"
+    else
+      "No, I don't want that, thanks"
 		end
   end
-  
+  alias eat_command suck_command
+
   def yoMamma_command(stem, sender, reply_to, msg)
   	"Yo dude! What's crackin?"
   end
@@ -52,8 +55,8 @@ class Rigel < Autumn::Leaf
   end
   
   def news_command(stem, sender, reply_to, msg)
-  	news = news(msg.strip)
-  	"#{color :blue}" + news[:title] + "#{uncolor}\n" + news[:link]
+  	news = news(msg)
+  	news.is_a?(String) ? news : ("#{color :blue}" + news[:title] + "#{uncolor}\n" + news[:link])
   end
   
   def pastie_command(stem, sender, reply_to, msg)

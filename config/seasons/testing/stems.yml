@@ -5,5 +5,5 @@ Example:
   - Rigel
   - Scorekeeper
   rejoin: true
-  channel: "#rigels-home"
+  channel: "#ruby"
   server: irc.freenode.com

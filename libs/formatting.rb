@@ -50,7 +50,10 @@ module Autumn
       # The mIRC color code sentinel.
       COLOR_CODE = 3.chr
       # Insert this character to stop colorizing text.
-      UNCOLOR = COLOR_CODE
+      UNCOLOR = COLOR_CODE + " "
+      # Same as UNCOLOR, but suppresses the trailing space for situations where
+      # no conflict is assured.
+      UNCOLOR_NO_SPACE = COLOR_CODE
       # Valid IRC colors, in the mIRC style, to be used with the color method.
       COLORS = {
         :white => '00',
@@ -98,7 +101,7 @@ module Autumn
 
       def color(fgcolor, bgcolor=nil, options={})
         fgcolor = :black unless COLORS.include? fgcolor
-	      bgcolor = :white unless (bgcolor.nil? or COLORS.include? bgcolor)
+        bgcolor = :white unless (bgcolor.nil? or COLORS.include? bgcolor)
         "#{COLOR_CODE}#{COLORS[fgcolor]}#{bgcolor ? (',' + COLORS[bgcolor]) : ''}#{options[:suppress_space] ? '' : ' '}"
       end
 
@@ -114,8 +117,14 @@ module Autumn
       # Sets all following text underline.
       def underline; UNDERLINE; end
       
-      # Removes coloring from all following text.
-      def uncolor; UNCOLOR; end
+      # Removes coloring from all following text. Options:
+      #
+      # +suppress_space+:: By default, this method places a space after the
+      #                    uncolor token to prevent "color bleed." If you would
+      #                    like to suppress this behavior, set this to true.
+      def uncolor(options={})
+        options[:suppress_space] ? UNCOLOR_NO_SPACE : UNCOLOR
+      end
     end
     
     # The default formatter for leaves that do not specify otherwise.
@@ -219,7 +228,6 @@ module Autumn
 
       # Sets all following text underline.
       def underline; UNDERLINE; end
-      
     end
   end
 end

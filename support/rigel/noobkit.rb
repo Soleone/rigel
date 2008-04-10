@@ -10,6 +10,7 @@ module Noobkit
 	
 	# Extracts search data from the HTML page at www.noobit.com
   def self.search(word)
+    return "" unless valid_search_phrase?(word)
     doc = Hpricot(open(URL + URI.encode(word.to_s)))
     all_results = doc.search("html/body/div[@id='page']/div[@class='content search-results']")
     results = all_results.at("div[@class='search-result']")
@@ -29,6 +30,8 @@ module Noobkit
 
 	# Searches for RubyInside posts
   def self.news(word)
+    return "You need a search phrase after !news (example: !news merb tutorial)" unless valid_search_phrase?(word)
+    puts "Searching for '#{word}'"
   	url = "http://www.rubyinside.com/?s="
     doc = Hpricot( open(url + URI.encode(word.to_s)) )
     items = doc.search("html/body/div[@id='page']/div[@id='content']/div[@class='post']")
@@ -67,5 +70,16 @@ private
   		riddle[name] = element.at(name).inner_html	
   	end
   	riddle
+  end
+
+  def self.valid_search_phrase?(word)
+    return false if !word || word.strip.empty?
+    return false unless /^[\w '"]+$/i
+    word.each_byte do |byte|
+      return false if byte > 128
+      puts "#{byte.chr} <--> #{byte}"
+    end
+    puts "-----> Validating '#{word}'"
+    true
   end
 end

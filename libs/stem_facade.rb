@@ -150,18 +150,20 @@ module Autumn
     
     def users(channel)
       channel = normalized_channel_name(channel)
-      Thread.exclusive { @channel_members[channel] && @channel_members[channel].keys }
+      @chan_mutex.synchronize { @channel_members[channel] && @channel_members[channel].keys }
     end
   
     # Returns the privilege level of a channel member. The privilege level will
     # be a symbol from the Daemon instance. Returns nil if the channel member
-    # doesn't exist or if the bot is not on the given channel.
+    # doesn't exist or if the bot is not on the given channel. Returns an array
+    # of privileges if the server supports multiple privileges per user, and the
+    # user has more than one privilege.
     #
     # +user+ can be a nick or a sender hash.
     
     def privilege(channel, user)
       user = user[:nick] if user.kind_of? Hash
-      Thread.exclusive { @channel_members[channel] && @channel_members[channel][user] }
+      @chan_mutex.synchronize { @channel_members[channel] && @channel_members[channel][user] }
     end
   end
 end

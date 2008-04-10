@@ -1,4 +1,5 @@
 require 'facets/string/partitions'
+require 'facets/string/indexable'
 require 'facets/array/only'
 
 module Autumn
@@ -34,7 +35,7 @@ module Autumn
     
     def initialize(name, info)
       if name.nil? and info.nil? then # it's the default hash
-        raise "Already created a default Daemon" if self.class.class_variables.include? :@@default
+        raise "Already created a default Daemon" if self.class.class_variable_defined? :@@default
         @usermode = Hash.parroting
         @privilege = Hash.parroting
         @user_prefix = Hash.parroting
@@ -54,16 +55,16 @@ module Autumn
         @@instances[name] = self
 
         # Build up our default so it contains all keys with no conflicting
-	      # values across different server specs. Delete keys from the default
-	      # hash for which we found duplicates.
-	      info.each do |hname, hsh|
-	        next unless @@default.respond_to? hname.to_sym
-	        default_hash = @@default.send(hname.to_sym)
-	        
-	        (hsh.keys & default_hash.keys).each { |k| default_hash.delete k }
-	        uniques = hsh.reject { |k, v| default_hash.include? k }
-	        default_hash.update uniques
-	      end
+        # values across different server specs. Delete keys from the default
+        # hash for which we found duplicates.
+        info.each do |hname, hsh|
+          next unless @@default.respond_to? hname.to_sym
+          default_hash = @@default.send(hname.to_sym)
+          
+          (hsh.keys & default_hash.keys).each { |k| default_hash.delete k }
+          uniques = hsh.reject { |k, v| default_hash.include? k }
+          default_hash.update uniques
+        end
       end
     end
     
@@ -140,6 +141,43 @@ module Autumn
     def privilege_mode?(mode)
       raise ArgumentError, "Invalid mode string '#{mode}'" unless mode =~ /^[\+\-]\S+$/
       mode.except_first.chars.all? { |c| privilege? c }
+    end
+
+    # Returns true if the first character(s) of a nick are valid privilege
+    # prefixes.
+
+    def nick_prefixed?(nick)
+      user_prefix? nick.first
+    end
+
+    # Given a nick, returns that nick stripped of any privilege characters on
+    # the left side.
+
+    def just_nick(name)
+      nick = name.dup
+      while nick_prefixed?(nick)
+        nick.slice! 0, 1
+      end
+      return nick
+    end
+
+    # Given a nick, returns the privileges granted to this nick, as indicated by
+    # the prefix characters. Returns :unvoiced if no prefix characters are
+    # present. Returns an array of privileges if multiple prefix characters are
+    # present.
+
+    def nick_privilege(name)
+      privs = Array.new
+      nick = name.dup
+      while user_prefix? nick.first
+        privs << user_prefix[nick.first]
+        nick.slice! 0, 1
+      end
+      case privs.size
+        when 0 then :unvoiced
+  when 1 then privs.only
+  else privs
+      end
     end
     
     def method_missing(meth, *args) # :nodoc:

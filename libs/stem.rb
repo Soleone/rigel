@@ -1,3 +1,4 @@
+require 'thread'
 require 'socket'
 require 'openssl'
 require 'facets/array/only'
@@ -6,6 +7,7 @@ require 'facets/enumerable/mash'
 #require 'facets/kernel/respond'
 require 'facets/string/indexable'
 require 'facets/string/partitions'
+require 'facets/annotations'
 
 module Autumn
   
@@ -91,6 +93,48 @@ module Autumn
   # "&kittens", you will have to provide the '&' character. Likewise, if you are
   # overriding a hook method, you can be guaranteed that the channel given to
   # you will always be called "#kittens", and not "kittens".
+  #
+  # = Synchronous Methods
+  #
+  # Because new messages are received and processed in separate threads, methods
+  # can sometimes receive messages out of order (for instance, if a first
+  # message takes a long time to process and a second message takes a short time
+  # to process). In the event that you require a guarantee that your method will
+  # receive messages in order, and that it will only be invoked in a single
+  # thread, annotate your method with the +stem_sync+ property.
+  #
+  # For instance, you might want to ensure that you are finished processing 353
+  # messages (replies to NAMES commands) before you tackle 366 messages (end of
+  # NAMES list). To ensure these methods are invoked in the correct order:
+  #
+  #  class MyListener
+  #    def irc_rpl_namreply_response(stem, sender, recipient, arguments, msg)
+  #      [...]
+  #    end
+  #    
+  #    def irc_rpl_endofnames_response(stem, sender, recipient, arguments, msg)
+  #      [...]
+  #    end
+  #    
+  #    self.class.ann :irc_rpl_namreply_response, :stem_sync => true
+  #    self.class.ann :irc_rpl_endofnames_response, :stem_sync => true
+  #  end
+  #
+  # All such methods will be run in a single thread, and will receive server
+  # messages in order. Because of this, it is important that synchronized
+  # methods do not spend a lot of time processing a single message, as it forces
+  # all other synchronous methods to wait their turn.
+  #
+  # This annotation is only relevant to "invoked" methods, those methods in
+  # listeners that are invoked by the stem's broadcast method. Methods that are
+  # marked with this annotation will also run faster, because they don't have
+  # the overhead of setting up a new thread.
+  #
+  # Many of Stem's own internal methods are synchronized, to ensure internal
+  # data such as the channels list and channel members list stays consistent.
+  # Because of this, any method marked as synchronized can be guaranteed that
+  # the stem's channel data is consistent and "in sync" for the moment of time
+  # that the message was received.
 
   class Stem
     include StemFacade
@@ -123,7 +167,7 @@ module Autumn
   
     # Valid IRC command names, mapped to information about their parameters.
     IRC_COMMANDS = {
-    	:pass => [ param('password') ],
+      :pass => [ param('password') ],
       :nick => [ param('nickname') ],
       :user => [ param('user'), param('host'), param('server'), param('name') ],
       :oper => [ param('user'), param('password') ],
@@ -257,6 +301,20 @@ module Autumn
       # Strip the passwords from @channels, making it an array of channel names only
       @channels.map! { |chan| chan.kind_of?(Hash) ? chan.keys.only : chan }
       @channel_members = Hash.new
+      @updating_channel_members = Hash.new # stores the NAMES list as its being built
+      
+      @chan_mutex = Mutex.new
+      @join_mutex = Mutex.new
+      @socket_mutex = Mutex.new
+      
+      # Synchronous (mutual exclusion) message processing is handled by a
+      # producer-consumer approach. The socket pushes messages onto this queue,
+      # which are processed by a consumer thread one at a time.
+      @messages = Queue.new
+      @message_consumer = Thread.new do
+        meths = @messages.pop
+        meths.each { |meth, args| broadcast_sync meth, *args }
+      end
     end
   
     # Adds an object that will receive notifications of incoming IRC messages.
@@ -365,9 +423,30 @@ module Autumn
     # then use the broadcast method to call methods named after those commands.
     # Other listeners who want to use CTCP support can implement the methods
     # that your listener plugin broadcasts.
+    #
+    # <b>Note:</b> Each method call will be executed in its own thread, and all
+    # exceptions will be caught and reported. This method will only invoke
+    # listener methods that have _not_ been marked as synchronized. (See
+    # "Synchronous Methods" in the class docs.)
     
     def broadcast(meth, *args)
-      @listeners.each { |listener| listener.respond meth, *args }
+      @listeners.select { |listener| not listener.class.ann(meth, :stem_sync) }.each do |listener|
+        Thread.new do
+          begin
+            listener.respond meth, *args
+          rescue
+            message("Listener #{listener.inspect} raised an exception responding to #{meth}: " + $!.to_s) rescue nil # Try to report the error if possible
+            options[:logger].fatal $!
+          end
+        end
+      end
+    end
+    
+    # Same as the broadcast method, but only invokes listener methods that
+    # _have_ been marked as synchronized.
+    
+    def broadcast_sync(meth, *args)
+      @listeners.select { |listener| listener.class.ann(meth, :stem_sync) }.each { |listener| listener.respond meth, *args }
     end
   
     # Opens a connection to the IRC server and begins listening on it. This
@@ -390,14 +469,10 @@ module Autumn
       nick @nick
       
       while line = @socket.gets
-        Thread.new(line) do |line|
-          begin
-            receive line
-          rescue
-            message("Error: " + $!.to_s) rescue nil # Try to report the error if possible
-            options[:logger].fatal $!
-          end
-        end
+        meths = receive line # parse the line and get a list of methods to call
+        @messages.push meths # push the methods on the queue; the consumer thread will execute all the synchronous methods
+        # then execute all the other methods in their own thread
+        meths.each { |meth, args| broadcast meth, *args }
       end
     end
     
@@ -474,6 +549,7 @@ module Autumn
     def irc_ping_event(stem, sender, arguments) # :nodoc:
       arguments[:message].nil? ? pong : pong(arguments[:message])
     end
+    self.class.ann :irc_ping_event, :stem_sync => true # To avoid overhead of a whole new thread just for a pong
     
     def irc_rpl_yourhost_response(stem, sender, recipient, arguments, msg) # :nodoc:
       type = nil
@@ -490,6 +566,7 @@ module Autumn
       @server_type = Daemon[type] 
       logger.info "Auto-detected #{type} server daemon type"
     end
+    self.class.ann :irc_rpl_yourhost_response, :stem_sync => true # So methods that synchronize can be guaranteed the host is known ASAP
     
     def irc_err_nicknameinuse_response(stem, sender, recipient, arguments, msg) # :nodoc:
       return unless nick_generator
@@ -506,37 +583,53 @@ module Autumn
     end
     
     def irc_rpl_namreply_response(stem, sender, recipient, arguments, msg) # :nodoc:
-      update_names_list arguments[1], msg.words
+      update_names_list arguments[1], msg.words unless arguments[1] == "*" # "*" refers to users not on a channel
     end
-        
+    self.class.ann :irc_rpl_namreply_response, :stem_sync => true # So endofnames isn't processed before namreply
+    
+    def irc_rpl_endofnames_response(stem, sender, recipient, arguments, msg) # :nodoc:
+      finish_names_list_update arguments[0]
+    end
+    self.class.ann :irc_rpl_endofnames_response, :stem_sync => true # so endofnames isn't processed before namreply
+    
     def irc_kick_event(stem, sender, arguments) # :nodoc:
-      if arguments[:recipient] == @nick then #TODO possible race condition here -- use hostmask?
-        Thread.exclusive do
-          @channels.delete arguments[0]
-          @channel_passwords.delete arguments[0]
+      if arguments[:recipient] == @nick then
+        @chan_mutex.synchronize do
+          @channels.delete arguments[:channel]
+          @channel_passwords.delete arguments[:channel]
+          @channel_members.delete arguments[:channel]
+          #TODO what should we do if we are in the middle of receiving NAMES replies?
         end
         join arguments[:channel] if options[:rejoin]
+      else
+        @chan_mutex.synchronize do
+          @channel_members[arguments[:channel]].delete arguments[:recipient]
+          #TODO what should we do if we are in the middle of receiving NAMES replies?
+        end
       end
     end
+    self.class.ann :irc_kick_event, :stem_sync => true # So methods that synchronize can be guaranteed the channel variables are up to date
     
     def irc_mode_event(stem, sender, arguments) # :nodoc:
       names arguments[:channel] if arguments[:parameter] and server_type.privilege_mode?(arguments[:mode])
     end
+    self.class.ann :irc_mode_event, :stem_sync => true # To avoid overhead of a whole new thread for a names reply
     
     def irc_join_event(stem, sender, arguments) # :nodoc:
-      if sender[:nick] == @nick then #TODO possible race condition here -- use hostmask?
+      if sender[:nick] == @nick then
         should_broadcast = false
-        Thread.exclusive do
+        @chan_mutex.synchronize do
           @channels << arguments[:channel] unless @channels.include? arguments[:channel]
           @channel_members[arguments[:channel]] ||= Hash.new
           @channel_members[arguments[:channel]][sender[:nick]] = :unvoiced
+          #TODO what should we do if we are in the middle of receiving NAMES replies?
           #TODO can we assume that all new channel members are unvoiced?
-	      end
-	      Thread.exclusive do
+        end
+        @join_mutex.synchronize do
           if @channels_to_join then
             @channels_to_join.delete arguments[:channel]
             if @channels_to_join.empty? then
-	            should_broadcast = true unless @ready
+              should_broadcast = true unless @ready
               @ready = true
               @channels_to_join = nil
             end
@@ -550,15 +643,32 @@ module Autumn
         broadcast :stem_ready, self if should_broadcast
       end
     end
+    self.class.ann :irc_join_event, :stem_sync => true # So methods that synchronize can be guaranteed the channel variables are up to date
     
     def irc_part_event(stem, sender, arguments) # :nodoc:
-      Thread.exclusive { @channel_members[arguments[:channel]].delete sender[:nick] }
+      @chan_mutex.synchronize do
+        @channel_members[arguments[:channel]].delete sender[:nick]
+        #TODO what should we do if we are in the middle of receiving NAMES replies?
+      end
     end
+    self.class.ann :irc_part_event, :stem_sync => true # So methods that synchronize can be guaranteed the channel variables are up to date
     
     def irc_nick_event(stem, sender, arguments) # :nodoc:
       @nick = arguments[:nick] if sender[:nick] == @nick
-      Thread.exclusive { @channel_members.each { |chan, members| members[arguments[:nick]] = members.delete(sender[:nick]) } }
+      @chan_mutex.synchronize do
+        @channel_members.each { |chan, members| members[arguments[:nick]] = members.delete(sender[:nick]) }
+        #TODO what should we do if we are in the middle of receiving NAMES replies?
+      end
     end
+    self.class.ann :irc_nick_event, :stem_sync => true # So methods that synchronize can be guaranteed the channel variables are up to date
+
+    def irc_quit_event(stem, sender, arguments) # :nodoc:
+      @chan_mutex.synchronize do
+        @channel_members.each { |chan, members| members.delete sender[:nick] }
+        #TODO what should we do if we are in the middle of receiving NAMES replies?
+      end
+    end
+    self.class.ann :irc_quit_event, :stem_sync => true # So methods that synchronize can be guaranteed the channel variables are up to date
     
     private
   
@@ -578,24 +688,26 @@ module Autumn
     end
   
     def transmit(comm)
-      Thread.exclusive do
+      @socket_mutex.synchronize do
         raise "IRC connection not opened yet" unless @socket
         logger.debug ">> " + comm
         @socket.puts comm
       end
     end
   
+    # Parses a message and returns a hash of methods to their arguments
     def receive(comm)
+      meths = Hash.new
       logger.debug "<< " + comm
     
       if comm =~ /^:(.+?)\s+NOTICE\s+(\S+)\s+:(.+?)[\r\n]$/
         server, sender, msg = $1, $2, $3
-        broadcast :irc_server_notice, self, server, sender, msg
-        return
+        meths[:irc_server_notice] = [ self, server, sender, msg ]
+        return meths
       elsif comm =~ /^ERROR :(.+?)[\r\n]*$/ then
         msg = $1
-        broadcast :irc_server_error, self, msg
-        return
+        meths[:irc_server_error] = [ self, msg ]
+        return meths
       elsif comm =~ /^:(#{NICK_REGEX})!(\S+?)@(\S+?)\s+([A-Z]+)\s+(.*?)[\r\n]*$/ then
         sender = { :nick => $1, :user => $2, :host => $3 }
         command, arg_str = $4, $5
@@ -611,13 +723,13 @@ module Autumn
         numeric_method = "irc_#{code}_response".to_sym
         readable_method = "irc_#{server_type.event[code.to_i]}_response".to_sym if not code.to_i.zero? and server_type.event?(code.to_i)
         name = arg_array.shift
-        broadcast numeric_method, self, server, name, arg_array, msg
-        broadcast readable_method, self, server, name, arg_array, msg if readable_method
-        broadcast :irc_response, self, code, server, name, arg_array, msg
-        return
+        meths[numeric_method] = [ self, server, name, arg_array, msg ]
+        meths[readable_method] = [ self, server, name, arg_array, msg ] if readable_method
+        meths[:irc_response] = [ self, code, server, name, arg_array, msg ]
+        return meths
       else
         logger.error "Couldn't parse IRC message: #{comm}"
-        return
+        return meths
       end
       
       if arg_str then
@@ -644,7 +756,12 @@ module Autumn
           arguments = { :channel => arg_array.at(0) }
         when :mode then
           arguments = if channel?(arg_array.at(0)) then { :channel => arg_array.at(0) } else { :recipient => arg_array.at(0) } end
-          arguments.update(:mode => arg_array.at(1), :parameter => arg_array.at(2))
+          params = arg_array[2, arg_array.size]
+          if params then
+            params = params.only if params.size == 1
+            params = nil if params.empty? # empty? is a method on String too, so this has to come second to prevent an error
+          end
+          arguments.update(:mode => arg_array.at(1), :parameter => params)
           # Usermodes stick the mode in the message
           if arguments[:mode].nil? and msg =~ /^[\+\-]\w+$/ then
             arguments[:mode] = msg
@@ -671,29 +788,32 @@ module Autumn
       arguments.update :message => msg
     
       method = "irc_#{command}_event".to_sym
-      broadcast method, self, sender, arguments
-      broadcast :irc_event, self, command, sender, arguments
+      meths[method] = [ self, sender, arguments ]
+      meths[:irc_event] = [ self, command, sender, arguments ]
+      return meths
     end
     
     def split_out_message(arg_str)
       arg_str, *msg = arg_str.split(':')
       msg = msg.join(':')
-      arg_array = arg_str.strip.words
+      #arg_array = arg_str.strip.words
+      arg_array = arg_str ? arg_str.strip.words : Array.new
       return arg_array, msg
     end
     
     def post_startup
       @ready_thread = Thread.new do
         sleep 10
-	      should_broadcast = false
-	      Thread.critical do
-  	      should_broadcast = true unless @ready
+        should_broadcast = false
+        @join_mutex.synchronize do
+          should_broadcast = true unless @ready
           @ready = true
-	        # If irc_join_event set @ready to true, then we know that they have
-	        # already broadcasted, because those two events are in a critical
-	        # section. Otherwise, we set ready to true, thus ensuring they won't
-	        # broadcast, and then broadcast if they haven't already.
-	      end
+          # If irc_join_event set @ready to true, then we know that they have
+          # already broadcasted, because those two events are in a critical
+          # section. Otherwise, we set ready to true, thus ensuring they won't
+          # broadcast, and then broadcast if they haven't already.
+          @channels_to_join = nil
+        end
         broadcast :stem_ready, self if should_broadcast
       end
       @channels_to_join = @channels
@@ -703,15 +823,17 @@ module Autumn
     end
     
     def update_names_list(channel, names)
-      Thread.exclusive do
-        @channel_members[channel] = Hash.new
+      @chan_mutex.synchronize do
+        @updating_channel_members[channel] ||= Hash.new
         names.each do |name|
-          if server_type.user_prefix?(name.first) then
-            @channel_members[channel][name.except_first] = server_type.user_prefix[name.first]
-          else
-            @channel_members[channel][name] = :unvoiced
-          end
+          @updating_channel_members[channel][server_type.just_nick(name)] = server_type.nick_privilege(name)
         end
+      end
+    end
+    
+    def finish_names_list_update(channel)
+      @chan_mutex.synchronize do
+        @channel_members[channel] = @updating_channel_members.delete(channel) if @updating_channel_members[channel]
       end
     end
   end

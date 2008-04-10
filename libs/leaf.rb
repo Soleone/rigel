@@ -511,7 +511,7 @@ module Autumn
     # that is running this leaf.
     
     def autumn_command(stem, sender, reply_to, msg)
-      "Autumn version 2.0.2 (3-18-08), an IRC bot framework for Ruby (http://autumn-leaves.googlecode.com)."
+      "Autumn version 2.0.3 (3-22-08), an IRC bot framework for Ruby (http://autumn-leaves.googlecode.com)."
     end
 
     private
@@ -538,7 +538,7 @@ module Autumn
               stem.message response, reply_to
             end
           end
-	      end
+        end
       end
     end
 
@@ -548,17 +548,17 @@ module Autumn
       exceptions = 0
       Dir.glob("#{options[:root]}/leaves/*.rb").each do |file|
         begin
-	        load file
-	      rescue Exception
-	        exceptions += 1
-	      end
+          load file
+        rescue Exception
+          exceptions += 1
+        end
       end
       Dir.glob("#{options[:root]}/support/**/*.rb").each do |file|
         begin
-	        load file
-	      rescue Exception
-	        exceptions += 1
-	      end
+          load file
+        rescue Exception
+          exceptions += 1
+        end
       end
       #TODO it's slow to reload everything in leaves/ and support/ for every leaf, but there's not really a better way for now
       logger.info "Reloading"

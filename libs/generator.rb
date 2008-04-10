@@ -94,6 +94,8 @@ module Autumn # :nodoc:
         if File.exist? sname then
           FileUtils.rm sname
           deleted sname, options
+        else
+          notfound sname, options
         end
         dname = "support/#{name.pathize}"
         if File.directory? dname then
@@ -152,8 +154,12 @@ module Autumn # :nodoc:
       dname = "config/seasons/#{name.pathize}"
       SEASON_FILES.each do |fname, content|
         fpath = File.join(dname, fname)
-        FileUtils.rm fpath
-        deleted fpath, options
+        if File.exist? fpath then
+          FileUtils.rm fpath
+          deleted fpath, options
+        else
+          notfound fpath, options
+        end
       end
       Dir.rmdir dname
       deleted dname, options
@@ -181,6 +187,10 @@ module Autumn # :nodoc:
     
     def notempty(path, options)
       puts "-- notempty #{path}" if options[:verbose]
+    end
+    
+    def notfound(path, options)
+      puts "-- notfound #{path}" if options[:verbose]
     end
   end
 end

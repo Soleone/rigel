@@ -151,7 +151,8 @@ module Autumn # :nodoc:
         leaf << "private"
         leaf.newline!
         leaf.method('authenticate_filter', 'stem', 'channel', 'sender', 'command', 'msg', 'opts') do |auth|
-          auth << '[ :operator, :admin, :founder, :channel_owner ].include? stem.privilege(channel, sender)'
+          auth << "# Returns true if the sender has any of the privileges listed below"
+          auth << 'not ([ :operator, :admin, :founder, :channel_owner ] & [ stem.privilege(channel, sender) ].flatten).empty?'
         end
       end
     end
